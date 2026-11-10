@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { RoleId } from "@/model/role";
+import { RoleId } from "@/model/role/id";
 import { UserId } from "@/model/user";
 import { PermissionFlags } from "./flags";
 
