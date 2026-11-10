@@ -1,10 +1,8 @@
 import { Schema } from "effect";
-import * as Snowflake from "@/model/snowflake";
-import { UserFlag, UserId } from "@/model/user";
-import { GuildMember } from "@/model/guild";
+import { UserId } from "@/model/user";
+import { GuildMember } from "@/model/guild/member";
+import { ChannelId } from "./channel";
 
-export const ThreadId = Snowflake.fromString.pipe(Schema.brand("ThreadId"));
-export type ThreadId = typeof ThreadId.Type;
 export const ThreadMetadata = Schema.Struct({
   archived: Schema.Boolean,
   autoArchiveDuration: Schema.Int,
@@ -16,7 +14,7 @@ export const ThreadMetadata = Schema.Struct({
 }).pipe(
   Schema.encodeKeys({
     autoArchiveDuration: "auto_archive_duration",
-    archiveTimestamp: "archived_timestamp",
+    archiveTimestamp: "archive_timestamp",
     createTimestamp: "create_timestamp",
   }),
 );
@@ -24,10 +22,10 @@ export const ThreadMetadata = Schema.Struct({
 export type ThreadMetadata = typeof ThreadMetadata.Type;
 
 export const ThreadMember = Schema.Struct({
-  id: Schema.optionalKey(ThreadId),
+  id: Schema.optionalKey(ChannelId),
   userId: Schema.optionalKey(UserId),
   joinTimestamp: Schema.DateTimeUtcFromString,
-  flags: UserFlag,
+  flags: Schema.Int,
   member: Schema.optionalKey(GuildMember),
 }).pipe(
   Schema.encodeKeys({
@@ -35,3 +33,4 @@ export const ThreadMember = Schema.Struct({
     joinTimestamp: "join_timestamp",
   }),
 );
+export type ThreadMember = typeof ThreadMember.Type;

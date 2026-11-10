@@ -3,10 +3,12 @@ import { known, type KnownChannelName, KnownChannelType, UnknownChannelType } fr
 import { ObfuscatedChannelFlags, VisibleChannelFlags } from "./flags";
 import * as Snowflake from "@/model/snowflake";
 import { UserId } from "@/model/user";
-import { GuildId } from "@/model/guild";
+import { GuildId } from "@/model/guild/id";
 
 import { PermissionOverwrite } from "@/model/permission";
 import { MessageId } from "./message";
+import { DefaultReactionEmoji, ForumLayout, ForumSortOrder, ForumTag } from "./forum";
+import { VideoQualityMode } from "./video";
 
 export const ChannelId = Snowflake.fromString.pipe(Schema.brand("ChannelId"));
 export type ChannelId = typeof ChannelId.Type;
@@ -61,7 +63,7 @@ const voice = {
   bitrate: Schema.optionalKey(Schema.Int),
   userLimit: Schema.optionalKey(Schema.Int),
   rtcRegion: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  videoQualityMode: Schema.optionalKey(Schema.Int),
+  videoQualityMode: Schema.optionalKey(VideoQualityMode),
 };
 
 const thread = {
@@ -78,12 +80,12 @@ const forum = {
   // On forum/media channels this is a thread id, NOT a message id.
   lastMessageId: Schema.optionalKey(Schema.NullOr(ChannelId)),
   rateLimitPerUser: Schema.optionalKey(Schema.Int),
-  availableTags: Schema.optionalKey(Schema.Array(Schema.Unknown)),
-  defaultReactionEmoji: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
+  availableTags: Schema.optionalKey(Schema.Array(ForumTag).check(Schema.isMaxLength(20))),
+  defaultReactionEmoji: Schema.optionalKey(Schema.NullOr(DefaultReactionEmoji)),
   defaultAutoArchiveDuration: Schema.optionalKey(Schema.Int),
   defaultThreadRateLimitPerUser: Schema.optionalKey(Schema.Int),
-  defaultSortOrder: Schema.optionalKey(Schema.NullOr(Schema.Int)),
-  defaultForumLayout: Schema.optionalKey(Schema.Int),
+  defaultSortOrder: Schema.optionalKey(Schema.NullOr(ForumSortOrder)),
+  defaultForumLayout: Schema.optionalKey(ForumLayout),
 };
 
 export const GuildTextChannel = Schema.Struct({
