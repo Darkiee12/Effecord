@@ -17,6 +17,9 @@ import { SystemChannelFlags } from "@/model/guild/flags";
 import { GuildFeatureValue } from "@/model/guild/features";
 import { WelcomeScreen } from "@/model/guild/welcome";
 import { IncidentsData } from "@/model/guild/incidents";
+import { Role } from "@/model/role";
+import { Emoji } from "@/model/emoji";
+import { Sticker } from "@/model/sticker";
 
 export { GuildId };
 
@@ -49,9 +52,8 @@ export const Guild = Schema.Struct({
   defaultMessageNotifications: DefaultMessageNotificationLevel,
   explicitContentFilter: ExplicitContentFilterLevel,
 
-  // TODO: Replace once their domain schemas are implemented.
-  roles: Schema.Array(Schema.Unknown),
-  emojis: Schema.Array(Schema.Unknown),
+  roles: Schema.Array(Role),
+  emojis: Schema.Array(Emoji),
 
   features: Schema.Array(GuildFeatureValue),
 
@@ -84,7 +86,7 @@ export const Guild = Schema.Struct({
   welcomeScreen: Schema.optionalKey(WelcomeScreen),
 
   nsfwLevel: GuildNsfwLevel,
-  stickers: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  stickers: Schema.optionalKey(Schema.Array(Sticker)),
 
   premiumProgressBarEnabled: Schema.Boolean,
   safetyAlertsChannelId: Schema.NullOr(ChannelId),

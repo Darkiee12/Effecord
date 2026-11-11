@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { UserId } from "@/model/user";
 import { GuildMember } from "@/model/guild/member";
-import { ChannelId } from "./channel";
+import { ChannelId } from "./id";
 
 export const ThreadMetadata = Schema.Struct({
   archived: Schema.Boolean,

@@ -1,17 +1,17 @@
 import { Record, Schema } from "effect";
 import { known, type KnownChannelName, KnownChannelType, UnknownChannelType } from "./type";
 import { ObfuscatedChannelFlags, VisibleChannelFlags } from "./flags";
-import * as Snowflake from "@/model/snowflake";
-import { UserId } from "@/model/user";
+import { User, UserId } from "@/model/user";
 import { GuildId } from "@/model/guild/id";
 
 import { PermissionOverwrite } from "@/model/permission";
+import { ChannelId } from "./id";
 import { MessageId } from "./message";
+import { ThreadMetadata } from "./thread";
 import { DefaultReactionEmoji, ForumLayout, ForumSortOrder, ForumTag } from "./forum";
 import { VideoQualityMode } from "./video";
 
-export const ChannelId = Snowflake.fromString.pipe(Schema.brand("ChannelId"));
-export type ChannelId = typeof ChannelId.Type;
+export { ChannelId };
 
 const wireKeys = {
   guildId: "guild_id",
@@ -72,7 +72,7 @@ const thread = {
   ownerId: Schema.optionalKey(UserId),
   messageCount: Schema.optionalKey(Schema.Int),
   memberCount: Schema.optionalKey(Schema.Int),
-  threadMetadata: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
+  threadMetadata: Schema.optionalKey(Schema.NullOr(ThreadMetadata)),
 };
 
 const forum = {
@@ -100,7 +100,7 @@ export const DMChannel = Schema.Struct({
   ...base,
   ...textual,
   ...known("DM"),
-  recipients: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  recipients: Schema.optionalKey(Schema.Array(User)),
 }).pipe(Schema.encodeKeys(wireKeys), Schema.brand("DecodedChannel"));
 
 export const GuildVoiceChannel = Schema.Struct({
@@ -115,7 +115,7 @@ export const GroupDMChannel = Schema.Struct({
   ...textual,
   ...known("GroupDM"),
   name: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  recipients: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+  recipients: Schema.optionalKey(Schema.Array(User)),
   ownerId: Schema.optionalKey(UserId),
 }).pipe(Schema.encodeKeys(wireKeys), Schema.brand("DecodedChannel"));
 

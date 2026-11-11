@@ -4,5 +4,6 @@ export * from "./flags";
 export * from "./message";
 export * from "./capabilities";
 export * from "./thread";
+export * from "./reaction";
 export * from "./forum";
 export * from "./video";
