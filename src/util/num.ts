@@ -1,8 +1,6 @@
 import { Schema } from "effect";
 
-const NonNegativeNumber = Schema.FiniteFromString.check(
-  Schema.isGreaterThanOrEqualTo(0),
-);
+const NonNegativeNumber = Schema.FiniteFromString.check(Schema.isGreaterThanOrEqualTo(0));
 
 const NonNegativeInteger = Schema.FiniteFromString.check(
   Schema.isInt(),

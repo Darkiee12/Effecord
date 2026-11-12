@@ -6,11 +6,8 @@ export class DiscordRateLimitCoordinator extends Context.Service<
   DiscordRateLimitCoordinator,
   RateLimitCoordinator
 >()("effecord/DiscordRateLimitCoordinator") {
-  static readonly layer = Layer.effect(
-    DiscordRateLimitCoordinator,
-    make,
-  );
+  static readonly layer = Layer.effect(DiscordRateLimitCoordinator, make);
 }
 
 export * as Coordinator from "./coordinator";
-export * as Headers from "./headers"
+export * as Headers from "./headers";

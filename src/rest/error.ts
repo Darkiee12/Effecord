@@ -8,7 +8,7 @@ export const DiscordErrorBody = Schema.Struct({
   code: Schema.optionalKey(Schema.Int),
   message: Schema.String,
   errors: Schema.optionalKey(Schema.Unknown),
-  retryAfter: Schema.optionalKey(Schema.Int),
+  retryAfter: Schema.optionalKey(Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))),
   global: Schema.optionalKey(Schema.Boolean),
 }).pipe(
   Schema.encodeKeys({

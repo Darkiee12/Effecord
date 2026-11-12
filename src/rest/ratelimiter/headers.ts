@@ -22,10 +22,8 @@ const decodeScope = Schema.decodeUnknownOption(RateLimitScope);
 export const parseRateLimitHeaders = (headers: Headers.Headers): RateLimitHeaders => {
   const get = (name: string) => Headers.get(headers, name);
 
-  const read = <A>(
-    name: string,
-    decode: (value: string) => Option.Option<A>,
-  ): Option.Option<A> => Option.flatMap(get(name), decode);
+  const read = <A>(name: string, decode: (value: string) => Option.Option<A>): Option.Option<A> =>
+    Option.flatMap(get(name), decode);
 
   const scope = read("x-ratelimit-scope", decodeScope);
 
@@ -38,17 +36,11 @@ export const parseRateLimitHeaders = (headers: Headers.Headers): RateLimitHeader
     limit: read("x-ratelimit-limit", decodeInteger),
     remaining: read("x-ratelimit-remaining", decodeInteger),
 
-    resetAt: read("x-ratelimit-reset", decodeNumber).pipe(
-      Option.map((seconds) => seconds * 1_000),
-    ),
+    resetAt: read("x-ratelimit-reset", decodeNumber).pipe(Option.map((seconds) => seconds * 1_000)),
 
-    resetAfter: read("x-ratelimit-reset-after", decodeNumber).pipe(
-      Option.map(Duration.seconds),
-    ),
+    resetAfter: read("x-ratelimit-reset-after", decodeNumber).pipe(Option.map(Duration.seconds)),
 
-    retryAfter: read("retry-after", decodeNumber).pipe(
-      Option.map(Duration.seconds),
-    ),
+    retryAfter: read("retry-after", decodeNumber).pipe(Option.map(Duration.seconds)),
 
     scope,
 

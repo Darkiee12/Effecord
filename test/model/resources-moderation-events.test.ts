@@ -7,7 +7,7 @@ import {
   AutoModerationRule,
   AutoModerationTriggerType,
   KeywordPresetType,
-} from "@/model/auto-moderation";
+} from "@/model/automod";
 import {
   GuildScheduledEvent,
   RecurrenceFrequency,

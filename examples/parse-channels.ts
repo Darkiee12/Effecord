@@ -1,4 +1,3 @@
-
 import { Schema } from "effect";
 import { Channel } from "@/model/channel";
 
@@ -10,25 +9,18 @@ if (!token || !guildId) {
 }
 
 // Fetch real channels from your Discord server.
-const response = await fetch(
-  `https://discord.com/api/v10/guilds/${guildId}/channels`,
-  {
-    headers: {
-      Authorization: `Bot ${token}`,
-    },
+const response = await fetch(`https://discord.com/api/v10/guilds/${guildId}/channels`, {
+  headers: {
+    Authorization: `Bot ${token}`,
   },
-);
+});
 
 if (!response.ok) {
-  throw new Error(
-    `Discord API error ${response.status}: ${await response.text()}`,
-  );
+  throw new Error(`Discord API error ${response.status}: ${await response.text()}`);
 }
 
 // Untrusted JSON → validated Effect models.
-const channels = Schema.decodeUnknownSync(
-  Schema.Array(Channel),
-)(await response.json());
+const channels = Schema.decodeUnknownSync(Schema.Array(Channel))(await response.json());
 
 console.log(`\nSuccessfully parsed ${channels.length} channels\n`);
 

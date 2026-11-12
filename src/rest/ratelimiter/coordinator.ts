@@ -1,5 +1,4 @@
-
-import { Clock, Data, Deferred, Duration, Effect, Option, Queue, Ref } from "effect";
+import { Clock, Data, Deferred, Duration, Effect, Fiber, Option, Queue, Ref } from "effect";
 import type { RateLimitHeaders } from "./headers";
 import { discoveredKey, provisionalKey, routeKey } from "./route";
 import type { HttpMethod, Route } from "../types";
@@ -65,8 +64,16 @@ export const make = Effect.gen(function* () {
   const buckets = new Map<string, Bucket>();
   const aliases = new Map<string, string>();
   const active = new Map<number, string>();
-  const wakes = new Map<string, number>();
+  const wakes = new Map<
+    string,
+    { readonly deadline: number; readonly fiber: Fiber.Fiber<boolean> }
+  >();
+  const sublimits = new Map<string, number>();
   let globalBlockedUntil = 0;
+  const globalAdmissions: Array<number> = [];
+
+  const sublimitKey = (method: HttpMethod, route: Route): string =>
+    JSON.stringify([method, route.path]);
 
   const getBucket = (key: string): Bucket => {
     let bucket = buckets.get(key);
@@ -88,20 +95,33 @@ export const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const previous = wakes.get(key);
       // An already-scheduled earlier wake can reassess a later deadline.
-      if (previous !== undefined && previous <= deadline) return;
+      if (previous !== undefined && previous.deadline <= deadline) return;
 
-      wakes.set(key, deadline);
-      yield* Effect.sleep(Duration.millis(Math.max(0, deadline - now))).pipe(
+      if (previous !== undefined) {
+        yield* Fiber.interrupt(previous.fiber).pipe(Effect.forkScoped);
+      }
+
+      const fiber = yield* Effect.sleep(Duration.millis(Math.max(0, deadline - now))).pipe(
         Effect.andThen(Queue.offer(inbox, Command.Wake({ key, deadline }))),
         Effect.forkScoped,
       );
+      wakes.set(key, { deadline, fiber });
     });
 
   const drain = Effect.gen(function* () {
     const now = yield* Clock.currentTimeMillis;
 
-    if (now < globalBlockedUntil) {
-      yield* scheduleWake("global", globalBlockedUntil, now);
+    while (globalAdmissions[0] !== undefined && globalAdmissions[0] + 1_000 <= now) {
+      globalAdmissions.shift();
+    }
+
+    const oldestAdmission = globalAdmissions[0];
+    const globalDeadline = Math.max(
+      globalBlockedUntil,
+      globalAdmissions.length === 50 && oldestAdmission !== undefined ? oldestAdmission + 1_000 : 0,
+    );
+    if (now < globalDeadline) {
+      yield* scheduleWake("global", globalDeadline, now);
       return;
     }
 
@@ -112,6 +132,20 @@ export const make = Effect.gen(function* () {
         yield* scheduleWake(key, bucket.blockedUntil, now);
         continue;
       }
+
+      let eligible = -1;
+      for (let index = 0; index < bucket.waiting.length; index++) {
+        const candidate = bucket.waiting[index];
+        if (candidate === undefined) continue;
+        const subkey = sublimitKey(candidate.method, candidate.route);
+        const deadline = sublimits.get(subkey) ?? 0;
+        if (now >= deadline) {
+          eligible = index;
+          break;
+        }
+        yield* scheduleWake(`sublimit:${subkey}`, deadline, now);
+      }
+      if (eligible === -1) continue;
 
       // A known window has expired. Start its new window conservatively.
       if (bucket.resetAt > 0 && now >= bucket.resetAt) {
@@ -129,10 +163,11 @@ export const make = Effect.gen(function* () {
         bucket.remaining = Option.some(1);
       }
 
-      const waiter = bucket.waiting.shift();
+      const waiter = bucket.waiting.splice(eligible, 1)[0];
       if (waiter === undefined) continue;
 
       bucket.inFlight += 1;
+      globalAdmissions.push(now);
       bucket.remaining = Option.map(bucket.remaining, (remaining) => Math.max(0, remaining - 1));
       active.set(waiter.id, key);
 
@@ -141,6 +176,11 @@ export const make = Effect.gen(function* () {
         method: waiter.method,
         route: waiter.route,
       });
+      if (globalAdmissions.length === 50) {
+        const oldest = globalAdmissions[0];
+        if (oldest !== undefined) yield* scheduleWake("global", oldest + 1_000, now);
+        break;
+      }
     }
   });
 
@@ -171,9 +211,8 @@ export const make = Effect.gen(function* () {
           if (Option.isNone(provisional)) return;
 
           const knownHash = aliases.get(routeKey(waiter.method, waiter.route));
-          const key = knownHash === undefined
-            ? provisional.value
-            : discoveredKey(waiter.route, knownHash);
+          const key =
+            knownHash === undefined ? provisional.value : discoveredKey(waiter.route, knownHash);
 
           getBucket(key).waiting.push(waiter);
         }),
@@ -198,6 +237,12 @@ export const make = Effect.gen(function* () {
                 bucket.waiting.length = 0;
                 target.blockedUntil = Math.max(target.blockedUntil, bucket.blockedUntil);
                 target.resetAt = Math.max(target.resetAt, bucket.resetAt);
+                target.limit = Option.isSome(target.limit) ? target.limit : bucket.limit;
+                if (Option.isSome(bucket.remaining)) {
+                  target.remaining = Option.isSome(target.remaining)
+                    ? Option.some(Math.min(target.remaining.value, bucket.remaining.value))
+                    : bucket.remaining;
+                }
 
                 // Preserve active reservations if aliases are discovered in
                 // different orders while another request is still in flight.
@@ -240,6 +285,9 @@ export const make = Effect.gen(function* () {
 
               if (headers.global) {
                 globalBlockedUntil = Math.max(globalBlockedUntil, until);
+              } else if (Option.isSome(headers.scope) && headers.scope.value === "shared") {
+                const key = sublimitKey(permit.method, permit.route);
+                sublimits.set(key, Math.max(sublimits.get(key) ?? 0, until));
               } else {
                 bucket.blockedUntil = Math.max(bucket.blockedUntil, until);
                 bucket.remaining = Option.some(0);
@@ -251,7 +299,7 @@ export const make = Effect.gen(function* () {
               bucket.resetAt <= now
             ) {
               // Missing reset headers: don't admit an immediate unbounded burst.
-              bucket.resetAt = now + 1_000;
+              bucket.blockedUntil = Math.max(bucket.blockedUntil, now + 1_000);
             }
           }
 
@@ -272,7 +320,7 @@ export const make = Effect.gen(function* () {
 
       Wake: ({ key, deadline }) =>
         Effect.sync(() => {
-          if (wakes.get(key) === deadline) wakes.delete(key);
+          if (wakes.get(key)?.deadline === deadline) wakes.delete(key);
         }),
     }).pipe(Effect.andThen(drain));
 
@@ -326,14 +374,11 @@ export const make = Effect.gen(function* () {
     route: Route,
     use: (permit: Option.Option<Permit>) => Effect.Effect<A, E, R>,
   ) =>
-    Effect.acquireUseRelease(
-      acquire(method, route),
-      use,
-      (permit) =>
-        Option.match(permit, {
-          onNone: () => Effect.void,
-          onSome: releasePermit,
-        }),
+    Effect.acquireUseRelease(acquire(method, route), use, (permit) =>
+      Option.match(permit, {
+        onNone: () => Effect.void,
+        onSome: releasePermit,
+      }),
     );
 
   return { acquire, observe, release: releasePermit, withPermit } as const;

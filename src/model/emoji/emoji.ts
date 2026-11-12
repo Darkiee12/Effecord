@@ -34,12 +34,8 @@ const emojiKeys = {
 // Full emoji object. `id`/`name` are required keys that may be null;
 // `roles`/`user`/`require_colons`/`managed`/`animated`/`available` are optional.
 export const Emoji = Schema.Union([
-  Schema.Struct({ ...customEmojiFields, ...emojiExtras }).pipe(
-    Schema.encodeKeys(emojiKeys),
-  ),
-  Schema.Struct({ ...unicodeEmojiFields, ...emojiExtras }).pipe(
-    Schema.encodeKeys(emojiKeys),
-  ),
+  Schema.Struct({ ...customEmojiFields, ...emojiExtras }).pipe(Schema.encodeKeys(emojiKeys)),
+  Schema.Struct({ ...unicodeEmojiFields, ...emojiExtras }).pipe(Schema.encodeKeys(emojiKeys)),
 ]);
 export type Emoji = typeof Emoji.Type;
 
