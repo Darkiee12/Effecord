@@ -1,15 +1,30 @@
-import { Context, Duration, Effect, Layer, Option, Redacted, Schedule } from "effect";
+import { Context, Duration, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import { Request } from "./request";
 import { Routes } from "./router";
 import { User } from "@/model/user/user";
-import { DiscordApiError, DiscordErrorBody } from "./error";
+import { DiscordApiError, apiError, decodeErrorBody, failFromResponse } from "./error";
 import { DiscordRateLimitCoordinator } from "./ratelimiter";
 import { parseRateLimitHeaders } from "./ratelimiter/headers";
 import type { RateLimitCoordinator } from "./ratelimiter/coordinator";
 
 export const DISCORD_API_URL = "https://discord.com/api/v10";
+
+const maxDuration = (
+  first: Option.Option<Duration.Duration>,
+  second: Option.Option<Duration.Duration>,
+): Option.Option<Duration.Duration> =>
+  Option.match(first, {
+    onNone: () => second,
+    onSome: (a) =>
+      Option.some(
+        Option.match(second, {
+          onNone: () => a,
+          onSome: (b) => Duration.max(a, b),
+        }),
+      ),
+  });
 
 /**
  * Constructs the Discord REST implementation.
@@ -34,52 +49,45 @@ const makeClient = (
     );
 
     const attempt = coordinator.withPermit(request.method, request.route, (permit) =>
-      http.execute(prepared).pipe(
-        Effect.flatMap((response) =>
-          Effect.gen(function* () {
-            const headers = parseRateLimitHeaders(response.headers);
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const response = yield* restore(http.execute(prepared));
+          const headers = parseRateLimitHeaders(response.headers);
 
-            if (response.status === 429) {
-              const body = yield* HttpClientResponse.schemaBodyJson(DiscordErrorBody)(
-                response,
-              ).pipe(
-                Effect.orElseSucceed((): DiscordErrorBody => ({
-                  message: "Discord returned an unrecognized rate limit response",
-                })),
-                Effect.onInterrupt(() =>
-                  Option.isSome(permit)
-                    ? coordinator.observe(permit.value, headers, response.status)
-                    : Effect.void,
-                ),
-              );
-              const observed = {
-                ...headers,
-                retryAfter: Option.orElse(headers.retryAfter, () =>
-                  Option.map(Option.fromNullishOr(body.retryAfter), Duration.seconds),
-                ),
-                global: headers.global || body.global === true,
-              };
-              if (Option.isSome(permit)) {
-                yield* Effect.uninterruptible(
-                  coordinator.observe(permit.value, observed, response.status),
-                );
-              }
-              return yield* new DiscordApiError({
-                status: response.status,
-                method: request.method,
-                route: request.route._tag,
-                body,
-              });
-            }
-
+          if (response.status === 429) {
+            const body = yield* restore(
+              decodeErrorBody(response, "Discord returned an unrecognized rate limit response"),
+            ).pipe(
+              Effect.onInterrupt(() =>
+                Option.isSome(permit)
+                  ? coordinator.observe(permit.value, headers, response.status)
+                  : Effect.void,
+              ),
+            );
+            const observed = {
+              ...headers,
+              retryAfter: maxDuration(
+                headers.retryAfter,
+                Option.map(Option.fromNullishOr(body.retryAfter), Duration.seconds),
+              ),
+              global: headers.global || body.global === true,
+            };
             if (Option.isSome(permit)) {
-              yield* Effect.uninterruptible(
-                coordinator.observe(permit.value, headers, response.status),
-              );
+              yield* coordinator.observe(permit.value, observed, response.status);
             }
-            return yield* HttpClientResponse.filterStatusOk(response);
-          }),
-        ),
+            return yield* apiError(request, response, body);
+          }
+
+          if (Option.isSome(permit)) {
+            yield* coordinator.observe(permit.value, headers, response.status);
+          }
+
+          if (response.status < 200 || response.status >= 300) {
+            return yield* restore(failFromResponse(request, response));
+          }
+
+          return response;
+        }),
       ),
     );
 
@@ -91,10 +99,10 @@ const makeClient = (
     );
   };
 
-  const getCurrentUser = () =>
-    send(Request.make("GET", Routes.make("CurrentUser", {}))).pipe(
-      Effect.flatMap(HttpClientResponse.schemaBodyJson(User)),
-    );
+  const sendJson = <S extends Schema.Constraint>(request: Request, schema: S) =>
+    send(request).pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(schema)));
+
+  const getCurrentUser = () => sendJson(Request.make("GET", Routes.make("CurrentUser", {})), User);
 
   return {
     getCurrentUser,

@@ -28,22 +28,32 @@ export class DiscordApiError extends Schema.TaggedError<
   body: DiscordErrorBody,
 }) {}
 
+export const decodeErrorBody = (
+  response: HttpClientResponse.HttpClientResponse,
+  fallbackMessage = "Discord returned an unrecognized error response",
+): Effect.Effect<DiscordErrorBody> =>
+  HttpClientResponse.schemaBodyJson(DiscordErrorBody)(response).pipe(
+    Effect.orElseSucceed((): DiscordErrorBody => ({
+      message: fallbackMessage,
+    })),
+  );
+
+export const apiError = (
+  request: Request,
+  response: HttpClientResponse.HttpClientResponse,
+  body: DiscordErrorBody,
+): DiscordApiError =>
+  new DiscordApiError({
+    status: response.status,
+    method: request.method,
+    route: request.route._tag,
+    body,
+  });
+
 export const failFromResponse = (
   request: Request,
   response: HttpClientResponse.HttpClientResponse,
 ) =>
-  HttpClientResponse.schemaBodyJson(DiscordErrorBody)(response).pipe(
-    Effect.orElseSucceed(() => ({
-      message: "Discord returned an unrecognized error response",
-    })),
-    Effect.flatMap((body) =>
-      Effect.fail(
-        new DiscordApiError({
-          status: response.status,
-          method: request.method,
-          route: request.route._tag,
-          body,
-        }),
-      ),
-    ),
+  decodeErrorBody(response).pipe(
+    Effect.flatMap((body) => Effect.fail(apiError(request, response, body))),
   );
