@@ -109,7 +109,7 @@ type SnapshotMessageBase = typeof SnapshotMessageBase.Type;
 type SnapshotMessageBaseEncoded = typeof SnapshotMessageBase.Encoded;
 
 export interface SnapshotMessage extends SnapshotMessageBase {
-  readonly messageSnapshots?: ReadonlyArray<MessageSnapshot> | undefined;
+  readonly messageSnapshots?: ReadonlyArray<MessageSnapshot>;
 }
 
 export interface MessageSnapshot {
@@ -117,7 +117,7 @@ export interface MessageSnapshot {
 }
 
 export interface SnapshotMessageEncoded extends SnapshotMessageBaseEncoded {
-  readonly message_snapshots?: ReadonlyArray<MessageSnapshotEncoded> | undefined;
+  readonly message_snapshots?: ReadonlyArray<MessageSnapshotEncoded>;
 }
 
 export interface MessageSnapshotEncoded {

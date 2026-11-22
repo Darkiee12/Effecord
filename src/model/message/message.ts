@@ -163,11 +163,11 @@ type MessageBaseEncoded = typeof MessageBase.Encoded;
 // `referenced_message` is a genuine recursive object: absent when the backend
 // did not attempt a fetch, null when the referenced message was deleted.
 export interface Message extends MessageBase {
-  readonly referencedMessage?: Message | null | undefined;
+  readonly referencedMessage?: Message | null;
 }
 
 export interface MessageEncoded extends MessageBaseEncoded {
-  readonly referenced_message?: MessageEncoded | null | undefined;
+  readonly referenced_message?: MessageEncoded | null;
 }
 
 export const Message: Schema.Codec<Message, MessageEncoded> = Schema.Struct({
