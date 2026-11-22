@@ -1,0 +1,30 @@
+{
+  "name": "effecord",
+  "type": "module",
+  "module": "src/index.ts",
+  "scripts": {
+    "typecheck": "bun check",
+    "test": "bun test",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "fmt": "oxfmt --write .",
+    "fmt:check": "oxfmt --check .",
+    "check": "bun run typecheck && bun run lint && bun run fmt:check",
+    "prepare": "effect-tsgo patch --typescript --oxlint",
+    "validate": "bun run check && bun test"
+  },
+  "dependencies": {
+    "effect": "^4.1.2"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.67.4",
+    "@types/bun": "latest",
+    "oxfmt": "0.78.0",
+    "oxlint": "1.91.0",
+    "oxlint-tsgolint": "7.0.2006",
+    "typescript": "7.0.2"
+  },
+  "peerDependencies": {
+    "typescript": "^7"
+  }
+}
