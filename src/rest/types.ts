@@ -8,33 +8,48 @@ export const RateLimitKind = Schema.Literals(["None", "Path", "Major"]);
 
 export type RateLimitKind = typeof RateLimitKind.Type;
 
+export interface RateLimitOptions {
+  readonly global?: boolean;
+}
+
 export interface NoRateLimit {
   readonly _tag: "None";
+  readonly global: boolean;
 }
 
 export interface PathRateLimit {
   readonly _tag: "Path";
+  readonly global: boolean;
 }
 
 export interface MajorRateLimit<K extends string> {
   readonly _tag: "Major";
   readonly keys: readonly [K, ...K[]];
+  readonly global: boolean;
 }
 
 export type RateLimitRule<K extends string> = NoRateLimit | PathRateLimit | MajorRateLimit<K>;
 
 export const RateLimit = {
-  none: (): NoRateLimit => ({
+  none: (options?: RateLimitOptions): NoRateLimit => ({
     _tag: "None",
+    global: options?.global ?? true,
   }),
 
-  path: (): PathRateLimit => ({
+  path: (options?: RateLimitOptions): PathRateLimit => ({
     _tag: "Path",
+    global: options?.global ?? true,
   }),
 
   major: <const K extends string>(...keys: readonly [K, ...K[]]): MajorRateLimit<K> => ({
     _tag: "Major",
     keys,
+    global: true,
+  }),
+
+  withoutGlobal: <R extends RateLimitRule<string>>(rule: R): R => ({
+    ...rule,
+    global: false,
   }),
 };
 
@@ -80,6 +95,7 @@ export interface Route<Name extends string = string> {
   readonly rateLimit: {
     readonly kind: RateLimitKind;
     readonly major: Option.Option<readonly string[]>;
+    readonly global?: boolean;
   };
 }
 
@@ -135,6 +151,7 @@ const make = <const Name extends string, const D extends RouteDefinition>(
     rateLimit: {
       kind: rule._tag,
       major,
+      global: rule.global,
     },
   };
 };

@@ -516,3 +516,312 @@ test("missing reset headers delay a zero-remaining bucket conservatively", async
     }),
   );
 });
+
+test("observe adopts new window remaining after prior reset expires while in flight", async () => {
+  await run(
+    Effect.gen(function* () {
+      const coordinator = yield* make;
+      const r = route("/window-rollover");
+      const first = permit(yield* coordinator.acquire("GET", r));
+      yield* coordinator.observe(
+        first,
+        headers({
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "1",
+          "x-ratelimit-reset-after": "1",
+        }),
+        200,
+      );
+
+      // Consumes the last remaining permit in the first window (remaining 1 -> 0).
+      const second = permit(yield* coordinator.acquire("GET", r));
+      // Window expires before Discord responds in the new window.
+      yield* TestClock.adjust("1100 millis");
+      yield* coordinator.observe(
+        second,
+        headers({
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "4",
+          "x-ratelimit-reset-after": "10",
+        }),
+        200,
+      );
+
+      // Must admit immediately in the new window instead of stalling for 10s.
+      const third = permit(yield* coordinator.acquire("GET", r));
+      yield* coordinator.release(third);
+    }),
+  );
+});
+
+test("observe adopts expanded quota when drain already cleared an expired window", async () => {
+  await run(
+    Effect.gen(function* () {
+      const coordinator = yield* make;
+      const r = route("/window-expanded");
+      const first = permit(yield* coordinator.acquire("GET", r));
+      yield* coordinator.observe(
+        first,
+        headers({
+          "x-ratelimit-limit": "1",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset-after": "1",
+        }),
+        200,
+      );
+
+      yield* TestClock.adjust("1 second");
+      const second = permit(yield* coordinator.acquire("GET", r));
+      yield* coordinator.observe(
+        second,
+        headers({
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "4",
+          "x-ratelimit-reset-after": "10",
+        }),
+        200,
+      );
+
+      const third = permit(yield* coordinator.acquire("GET", r));
+      yield* coordinator.release(third);
+    }),
+  );
+});
+
+test("stale headers from an older reset window do not clobber a newer window", async () => {
+  await run(
+    Effect.gen(function* () {
+      const coordinator = yield* make;
+      const a = route("/stale/a");
+      const b = route("/stale/b");
+      const newer = permit(yield* coordinator.acquire("GET", a));
+      const older = permit(yield* coordinator.acquire("GET", b));
+
+      yield* coordinator.observe(
+        newer,
+        headers({
+          "x-ratelimit-bucket": "windowed",
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "4",
+          "x-ratelimit-reset": "20",
+          "x-ratelimit-reset-after": "10",
+        }),
+        200,
+      );
+      yield* coordinator.observe(
+        older,
+        headers({
+          "x-ratelimit-bucket": "windowed",
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset": "10",
+          "x-ratelimit-reset-after": "0.1",
+        }),
+        200,
+      );
+
+      const next = permit(yield* coordinator.acquire("GET", a));
+      yield* coordinator.release(next);
+    }),
+  );
+});
+
+test("superseded earlier wake-up does not unblock a bucket before its later deadline", async () => {
+  await run(
+    Effect.gen(function* () {
+      const coordinator = yield* make;
+      const a = route("/wake/a");
+      const b = route("/wake/b");
+      const first = permit(yield* coordinator.acquire("GET", a));
+      const second = permit(yield* coordinator.acquire("GET", b));
+
+      yield* coordinator.observe(
+        first,
+        headers({
+          "x-ratelimit-bucket": "wake-bucket",
+          "x-ratelimit-limit": "1",
+          "x-ratelimit-remaining": "0",
+          "x-ratelimit-reset-after": "0.1",
+        }),
+        200,
+      );
+
+      const waiting = yield* coordinator.acquire("GET", a).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      // Second response merges into the same bucket with a later 500ms 429 deadline.
+      yield* coordinator.observe(
+        second,
+        headers({
+          "x-ratelimit-bucket": "wake-bucket",
+          "retry-after": "0.5",
+        }),
+        429,
+      );
+
+      yield* TestClock.adjust("100 millis");
+      expect(yield* Fiber.await(waiting).pipe(Effect.timeoutOption(0))).toEqual(Option.none());
+      yield* TestClock.adjust("399 millis");
+      expect(yield* Fiber.await(waiting).pipe(Effect.timeoutOption(0))).toEqual(Option.none());
+      yield* TestClock.adjust("1 millis");
+      yield* coordinator.release(permit(yield* Fiber.join(waiting)));
+    }),
+  );
+});
+
+test("multiple aliases merging into an active bucket preserve FIFO order and active count", async () => {
+  await run(
+    Effect.gen(function* () {
+      const coordinator = yield* make;
+      const a = route("/multi/a");
+      const b = route("/multi/b");
+      const c = route("/multi/c");
+
+      const firstA = permit(yield* coordinator.acquire("GET", a));
+      const firstB = permit(yield* coordinator.acquire("GET", b));
+      const firstC = permit(yield* coordinator.acquire("GET", c));
+
+      yield* coordinator.observe(
+        firstA,
+        headers({
+          "x-ratelimit-bucket": "multi-hash",
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "4",
+          "x-ratelimit-reset-after": "1",
+        }),
+        200,
+      );
+
+      const activeA = permit(yield* coordinator.acquire("GET", a));
+      const waitB = yield* coordinator.acquire("GET", b).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const waitC = yield* coordinator.acquire("GET", c).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* coordinator.observe(
+        firstB,
+        headers({
+          "x-ratelimit-bucket": "multi-hash",
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "3",
+          "x-ratelimit-reset-after": "1",
+        }),
+        200,
+      );
+      yield* coordinator.observe(
+        firstC,
+        headers({
+          "x-ratelimit-bucket": "multi-hash",
+          "x-ratelimit-limit": "5",
+          "x-ratelimit-remaining": "3",
+          "x-ratelimit-reset-after": "1",
+        }),
+        200,
+      );
+
+      // Neither merged waiter may run while activeA is still in flight.
+      expect(yield* Fiber.await(waitB).pipe(Effect.timeoutOption(0))).toEqual(Option.none());
+      expect(yield* Fiber.await(waitC).pipe(Effect.timeoutOption(0))).toEqual(Option.none());
+
+      yield* coordinator.release(activeA);
+      const permitB = permit(yield* Fiber.join(waitB));
+      expect(yield* Fiber.await(waitC).pipe(Effect.timeoutOption(0))).toEqual(Option.none());
+
+      yield* coordinator.release(permitB);
+      const permitC = permit(yield* Fiber.join(waitC));
+      expect(permitB.id).toBeLessThan(permitC.id);
+      yield* coordinator.release(permitC);
+    }),
+  );
+});
+
+test("RateLimitKind.None still participates in the global budget and global 429s by default", async () => {
+  await run(
+    Effect.gen(function* () {
+      const coordinator = yield* make;
+      const unbucketed: Route = {
+        _tag: "Unbucketed",
+        path: "/gateway",
+        pattern: "/gateway",
+        rateLimit: { kind: "None", major: Option.none() },
+      };
+
+      // Concurrent admissions succeed without per-bucket serialization.
+      const concurrentA = permit(yield* coordinator.acquire("GET", unbucketed));
+      const concurrentB = permit(yield* coordinator.acquire("GET", unbucketed));
+      expect(concurrentA.id).not.toBe(concurrentB.id);
+
+      // Consume the remaining 48 slots in the rolling 50 req/s global window.
+      for (let i = 0; i < 48; i++) {
+        yield* coordinator.release(permit(yield* coordinator.acquire("GET", unbucketed)));
+      }
+      const blockedByBudget = yield* coordinator.acquire("GET", unbucketed).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("999 millis");
+      expect(yield* Fiber.await(blockedByBudget).pipe(Effect.timeoutOption(0))).toEqual(
+        Option.none(),
+      );
+      yield* TestClock.adjust("1 millis");
+      const admitted = permit(yield* Fiber.join(blockedByBudget));
+
+      // A global 429 observed on a None route blocks other routes.
+      yield* coordinator.observe(
+        admitted,
+        headers({ "retry-after": "0.2", "x-ratelimit-scope": "global" }),
+        429,
+      );
+      const other = yield* coordinator.acquire("GET", route("/other")).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust("199 millis");
+      expect(yield* Fiber.await(other).pipe(Effect.timeoutOption(0))).toEqual(Option.none());
+      yield* TestClock.adjust("1 millis");
+      yield* coordinator.release(permit(yield* Fiber.join(other)));
+      yield* coordinator.release(concurrentA);
+      yield* coordinator.release(concurrentB);
+    }),
+  );
+});
+
+test("global-exempt routes bypass bot global blocks while preserving per-bucket limits", async () => {
+  await run(
+    Effect.gen(function* () {
+      const coordinator = yield* make;
+      const exemptNone: Route = {
+        _tag: "InteractionCallback",
+        path: "/interactions/1/tok/callback",
+        pattern: "/interactions/{id}/{token}/callback",
+        rateLimit: { kind: "None", major: Option.none(), global: false },
+      };
+      const exemptWebhook: Route = {
+        _tag: "ExecuteWebhook",
+        path: "/webhooks/1/tok",
+        pattern: "/webhooks/{id}/{token}",
+        rateLimit: { kind: "Major", major: Option.some(["1", "tok"]), global: false },
+      };
+
+      // Trigger a bot-wide global 429.
+      const botPermit = permit(yield* coordinator.acquire("GET", route("/users/@me")));
+      yield* coordinator.observe(
+        botPermit,
+        headers({ "retry-after": "5", "x-ratelimit-scope": "global" }),
+        429,
+      );
+
+      // Fully exempt route bypasses coordinator altogether.
+      expect(yield* coordinator.acquire("POST", exemptNone)).toEqual(Option.none());
+
+      // Global-exempt webhook route is admitted during the bot global 429,
+      // while still enforcing its own per-webhook bucket.
+      const webhookFirst = permit(yield* coordinator.acquire("POST", exemptWebhook));
+      const webhookSecond = yield* coordinator
+        .acquire("POST", exemptWebhook)
+        .pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      expect(yield* Fiber.await(webhookSecond).pipe(Effect.timeoutOption(0))).toEqual(
+        Option.none(),
+      );
+      yield* coordinator.release(webhookFirst);
+      yield* coordinator.release(permit(yield* Fiber.join(webhookSecond)));
+    }),
+  );
+});

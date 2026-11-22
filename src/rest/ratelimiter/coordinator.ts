@@ -22,6 +22,7 @@ interface Bucket {
   limit: Option.Option<number>;
   remaining: Option.Option<number>;
   resetAt: number;
+  serverResetAt: Option.Option<number>;
   blockedUntil: number;
   lastUsedAt: number;
 }
@@ -77,6 +78,7 @@ export const make = Effect.gen(function* () {
     { readonly deadline: number; readonly fiber: Fiber.Fiber<boolean> }
   >();
   const sublimits = new Map<string, number>();
+  const globalWaiting: Array<Waiter> = [];
   let globalBlockedUntil = 0;
   const globalAdmissions: Array<number> = [];
 
@@ -84,6 +86,8 @@ export const make = Effect.gen(function* () {
   let closed = false;
   const pendingAcquires = new Set<Deferred.Deferred<Permit>>();
   const pendingAcks = new Set<Deferred.Deferred<void>>();
+
+  const countsTowardGlobal = (route: Route): boolean => route.rateLimit.global ?? true;
 
   // Current routes have no resource-specific sublimit metadata. An endpoint
   // sharing a sublimit across URLs will need an explicit resource key.
@@ -99,6 +103,7 @@ export const make = Effect.gen(function* () {
         limit: Option.none(),
         remaining: Option.none(),
         resetAt: 0,
+        serverResetAt: Option.none(),
         blockedUntil: 0,
         lastUsedAt: 0,
       };
@@ -166,9 +171,26 @@ export const make = Effect.gen(function* () {
       globalBlockedUntil,
       globalAdmissions.length === 50 && oldestAdmission !== undefined ? oldestAdmission + 1_000 : 0,
     );
-    if (now < globalDeadline) {
+    let globalBlocked = now < globalDeadline;
+    if (globalBlocked) {
       yield* scheduleWake("global", globalDeadline, now);
-      return;
+    }
+
+    while (!globalBlocked && globalWaiting.length > 0) {
+      const waiter = globalWaiting.shift();
+      if (waiter === undefined) break;
+
+      globalAdmissions.push(now);
+      yield* Deferred.succeed(waiter.reply, {
+        id: waiter.id,
+        method: waiter.method,
+        route: waiter.route,
+      });
+      if (globalAdmissions.length === 50) {
+        globalBlocked = true;
+        const oldest = globalAdmissions[0];
+        if (oldest !== undefined) yield* scheduleWake("global", oldest + 1_000, now);
+      }
     }
 
     for (const [key, bucket] of buckets) {
@@ -183,6 +205,7 @@ export const make = Effect.gen(function* () {
       for (let index = 0; index < bucket.waiting.length; index++) {
         const candidate = bucket.waiting[index];
         if (candidate === undefined) continue;
+        if (countsTowardGlobal(candidate.route) && globalBlocked) continue;
         const subkey = sublimitKey(candidate.method, candidate.route);
         const deadline = sublimits.get(subkey) ?? 0;
         if (now >= deadline) {
@@ -197,6 +220,7 @@ export const make = Effect.gen(function* () {
       if (bucket.resetAt > 0 && now >= bucket.resetAt) {
         bucket.remaining = bucket.limit;
         bucket.resetAt = 0;
+        bucket.serverResetAt = Option.none();
       }
 
       if (Option.isSome(bucket.remaining) && bucket.remaining.value === 0) {
@@ -215,7 +239,9 @@ export const make = Effect.gen(function* () {
       const decremented = Option.isSome(bucket.remaining) && bucket.remaining.value > 0;
       bucket.inFlight += 1;
       bucket.lastUsedAt = now;
-      globalAdmissions.push(now);
+      if (countsTowardGlobal(waiter.route)) {
+        globalAdmissions.push(now);
+      }
       bucket.remaining = Option.map(bucket.remaining, (remaining) => Math.max(0, remaining - 1));
       active.set(waiter.id, { key, decremented });
 
@@ -224,10 +250,10 @@ export const make = Effect.gen(function* () {
         method: waiter.method,
         route: waiter.route,
       });
-      if (globalAdmissions.length === 50) {
+      if (countsTowardGlobal(waiter.route) && globalAdmissions.length === 50) {
+        globalBlocked = true;
         const oldest = globalAdmissions[0];
         if (oldest !== undefined) yield* scheduleWake("global", oldest + 1_000, now);
-        break;
       }
     }
   });
@@ -251,6 +277,12 @@ export const make = Effect.gen(function* () {
   };
 
   const removeWaiting = (id: number): void => {
+    const globalIndex = globalWaiting.findIndex((waiter) => waiter.id === id);
+    if (globalIndex !== -1) {
+      globalWaiting.splice(globalIndex, 1);
+      return;
+    }
+
     for (const bucket of buckets.values()) {
       const index = bucket.waiting.findIndex((waiter) => waiter.id === id);
       if (index !== -1) {
@@ -265,7 +297,10 @@ export const make = Effect.gen(function* () {
       Acquire: ({ waiter }) =>
         Effect.sync(() => {
           const provisional = provisionalKey(waiter.method, waiter.route);
-          if (Option.isNone(provisional)) return;
+          if (Option.isNone(provisional)) {
+            if (countsTowardGlobal(waiter.route)) globalWaiting.push(waiter);
+            return;
+          }
 
           const knownHash = aliases.get(routeKey(waiter.method, waiter.route));
           const key =
@@ -276,9 +311,9 @@ export const make = Effect.gen(function* () {
 
       Observe: ({ permit, headers, status, reply }) =>
         Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis;
           const activePermit = active.get(permit.id);
           if (activePermit !== undefined) {
-            const now = yield* Clock.currentTimeMillis;
             const originalKey = activePermit.key;
             release(permit.id, now);
             let key = originalKey;
@@ -296,6 +331,11 @@ export const make = Effect.gen(function* () {
                 bucket.waiting.length = 0;
                 target.blockedUntil = Math.max(target.blockedUntil, bucket.blockedUntil);
                 target.resetAt = Math.max(target.resetAt, bucket.resetAt);
+                if (Option.isSome(bucket.serverResetAt)) {
+                  target.serverResetAt = Option.isSome(target.serverResetAt)
+                    ? Option.some(Math.max(target.serverResetAt.value, bucket.serverResetAt.value))
+                    : bucket.serverResetAt;
+                }
                 target.limit = Option.isSome(target.limit) ? target.limit : bucket.limit;
                 if (Option.isSome(bucket.remaining)) {
                   target.remaining = Option.isSome(target.remaining)
@@ -319,24 +359,55 @@ export const make = Effect.gen(function* () {
             }
 
             bucket.lastUsedAt = now;
-            if (Option.isSome(headers.limit)) bucket.limit = headers.limit;
-            if (Option.isSome(headers.remaining)) {
-              // Other requests may already be in flight in the discovered bucket.
-              const reported = Math.max(0, headers.remaining.value - bucket.inFlight);
-              bucket.remaining = Option.some(
-                Option.isSome(bucket.remaining)
-                  ? Math.min(bucket.remaining.value, reported)
-                  : reported,
+
+            // Expire any completed window before applying new server headers so
+            // a previous window's remaining=0 cannot stall the new window.
+            if (bucket.resetAt > 0 && now >= bucket.resetAt) {
+              bucket.remaining = Option.map(bucket.limit, (limit) =>
+                Math.max(0, limit - bucket.inFlight),
               );
-              for (const entry of active.values()) {
-                if (entry.key === key) entry.decremented = false;
-              }
+              bucket.resetAt = 0;
+              bucket.serverResetAt = Option.none();
             }
 
-            if (Option.isSome(headers.resetAfter)) {
-              bucket.resetAt = now + Duration.toMillis(headers.resetAfter.value);
-            } else if (Option.isSome(headers.resetAt)) {
-              bucket.resetAt = headers.resetAt.value;
+            const observedResetAt = Option.orElse(
+              Option.map(headers.resetAfter, (resetAfter) => now + Duration.toMillis(resetAfter)),
+              () => headers.resetAt,
+            );
+            const staleWindow =
+              Option.isSome(headers.resetAt) &&
+              Option.isSome(bucket.serverResetAt) &&
+              headers.resetAt.value < bucket.serverResetAt.value;
+            const hasWindow = Option.isSome(observedResetAt) && observedResetAt.value > now;
+            const newWindow =
+              (bucket.resetAt === 0 && hasWindow) ||
+              (Option.isSome(headers.resetAt) &&
+                Option.isSome(bucket.serverResetAt) &&
+                headers.resetAt.value > bucket.serverResetAt.value);
+
+            if (!staleWindow) {
+              if (Option.isSome(headers.limit)) bucket.limit = headers.limit;
+              if (Option.isSome(headers.remaining)) {
+                // Other requests may already be in flight in the discovered bucket.
+                const reported = Math.max(0, headers.remaining.value - bucket.inFlight);
+                bucket.remaining = Option.some(
+                  newWindow || Option.isNone(bucket.remaining)
+                    ? reported
+                    : Math.min(bucket.remaining.value, reported),
+                );
+                for (const entry of active.values()) {
+                  if (entry.key === key) entry.decremented = false;
+                }
+              }
+
+              if (Option.isSome(observedResetAt)) {
+                bucket.resetAt = newWindow
+                  ? observedResetAt.value
+                  : Math.max(bucket.resetAt, observedResetAt.value);
+              }
+              if (Option.isSome(headers.resetAt)) {
+                bucket.serverResetAt = headers.resetAt;
+              }
             }
 
             if (status === 429) {
@@ -349,10 +420,10 @@ export const make = Effect.gen(function* () {
               if (headers.global) {
                 globalBlockedUntil = Math.max(globalBlockedUntil, until);
               } else if (Option.isSome(headers.scope) && headers.scope.value === "shared") {
-                const key = sublimitKey(permit.method, permit.route);
-                const deadline = Math.max(sublimits.get(key) ?? 0, until);
-                sublimits.set(key, deadline);
-                yield* scheduleWake(`sublimit:${key}`, deadline, now);
+                const subkey = sublimitKey(permit.method, permit.route);
+                const deadline = Math.max(sublimits.get(subkey) ?? 0, until);
+                sublimits.set(subkey, deadline);
+                yield* scheduleWake(`sublimit:${subkey}`, deadline, now);
               } else {
                 bucket.blockedUntil = Math.max(bucket.blockedUntil, until);
                 bucket.remaining = Option.some(0);
@@ -366,6 +437,12 @@ export const make = Effect.gen(function* () {
               // Missing reset headers: don't admit an immediate unbounded burst.
               bucket.blockedUntil = Math.max(bucket.blockedUntil, now + 1_000);
             }
+          } else if (status === 429 && headers.global) {
+            const delay = Option.getOrElse(
+              Option.orElse(headers.retryAfter, () => headers.resetAfter),
+              () => Duration.seconds(1),
+            );
+            globalBlockedUntil = Math.max(globalBlockedUntil, now + Duration.toMillis(delay));
           }
 
           yield* Deferred.succeed(reply, undefined);
@@ -431,7 +508,7 @@ export const make = Effect.gen(function* () {
       if (closed) return yield* Effect.interrupt;
 
       const provisional = provisionalKey(method, route);
-      if (Option.isNone(provisional)) return Option.none<Permit>();
+      if (Option.isNone(provisional) && !countsTowardGlobal(route)) return Option.none<Permit>();
 
       const id = yield* Ref.updateAndGet(ids, (n) => n + 1);
       const reply = yield* Deferred.make<Permit>();
